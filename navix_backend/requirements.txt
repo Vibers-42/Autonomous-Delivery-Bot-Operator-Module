@@ -1,0 +1,7 @@
+fastapi>=0.100.0
+uvicorn>=0.22.0
+opencv-python>=4.7.0.72
+numpy>=1.24.3
+websockets>=11.0.3
+python-multipart>=0.0.6
+httpx>=0.25.0
