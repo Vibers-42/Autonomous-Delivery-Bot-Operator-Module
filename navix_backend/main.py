@@ -18,8 +18,19 @@ from contextlib import asynccontextmanager
 
 from map_analyzer import MapAnalyzer
 from path_planner import PathPlanner
-import google.generativeai as genai
-import PIL.Image
+
+# Optional Google Gemini Vision API Fallback
+try:
+    import google.generativeai as genai
+    import PIL.Image
+    GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyBmPlrLcbKRf7kmHw8BMnoNCxi5VnE83Zo")
+    if GEMINI_API_KEY:
+        genai.configure(api_key=GEMINI_API_KEY)
+    GEMINI_AVAILABLE = True
+except Exception as _ge:
+    print(f"[Gemini] Google Generative AI not available: {_ge}")
+    genai = None
+    GEMINI_AVAILABLE = False
 
 # Vision Pipeline (YOLO + MiDaS)
 try:
@@ -28,10 +39,6 @@ try:
 except ImportError as _ve:
     print(f"[VisionPipeline] Not available: {_ve}")
     VISION_AVAILABLE = False
-
-# Configure Google Gemini API key
-GEMINI_API_KEY = "AIzaSyBmPlrLcbKRf7kmHw8BMnoNCxi5VnE83Zo"
-genai.configure(api_key=GEMINI_API_KEY)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -1623,6 +1630,8 @@ def process_and_load_map(file_location: str) -> dict:
         
     # 2. Fallback to Google Gemini Vision API if local analyzer failed or returned empty graph
     if graph is None:
+        if not GEMINI_AVAILABLE or genai is None:
+            raise Exception("Local MapAnalyzer failed and Google Gemini API is not available.")
         is_invalid_map = False
         invalid_map_reason = ""
         try:
