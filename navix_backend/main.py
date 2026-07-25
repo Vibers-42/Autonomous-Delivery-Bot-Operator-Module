@@ -23,7 +23,7 @@ from path_planner import PathPlanner
 try:
     import google.generativeai as genai
     import PIL.Image
-    GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyBmPlrLcbKRf7kmHw8BMnoNCxi5VnE83Zo")
+    GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
     if GEMINI_API_KEY:
         genai.configure(api_key=GEMINI_API_KEY)
     GEMINI_AVAILABLE = True

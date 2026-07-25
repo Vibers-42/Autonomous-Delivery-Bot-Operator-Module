@@ -8,6 +8,11 @@ venv/
 *.onnx
 *.engine
 
+# Environment secrets
+.env
+*.env
+!.env.example
+
 # Flutter / Dart
 .dart_tool/
 .flutter-plugins
