@@ -34,28 +34,48 @@ def _load_models():
             _yolo_model = YOLO("yolov8n.pt")   # auto-downloads ~6 MB on first run
             print("[VisionPipeline] YOLOv8n loaded OK")
         except Exception as e:
-            print(f"[VisionPipeline] YOLO load error: {e}")
+            print(f"[VisionPipeline] WARNING: YOLO model load error: {e}")
+            _yolo_model = None
 
         try:
             import torch
             _midas_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            print(f"[VisionPipeline] Loading MiDaS on {_midas_device}...")
-            _midas_model = torch.hub.load(
-                "intel-isl/MiDaS", "MiDaS_small",
-                trust_repo="check",
-                skip_validation=True,
-            )
+            print(f"[VisionPipeline] Loading MiDaS on {_midas_device} (headless/non-interactive)...")
+            
+            # Use trust_repo=True to bypass interactive GitHub repository trust prompts in production/Render
+            try:
+                _midas_model = torch.hub.load(
+                    "intel-isl/MiDaS", "MiDaS_small",
+                    trust_repo=True,
+                    skip_validation=True,
+                )
+            except Exception as _tr_err:
+                # Fallback attempt if trust_repo kwarg differs on older PyTorch versions
+                _midas_model = torch.hub.load(
+                    "intel-isl/MiDaS", "MiDaS_small",
+                    skip_validation=True,
+                )
+
             _midas_model.to(_midas_device)
             _midas_model.eval()
-            midas_transforms = torch.hub.load(
-                "intel-isl/MiDaS", "transforms",
-                trust_repo="check",
-                skip_validation=True,
-            )
+
+            try:
+                midas_transforms = torch.hub.load(
+                    "intel-isl/MiDaS", "transforms",
+                    trust_repo=True,
+                    skip_validation=True,
+                )
+            except Exception:
+                midas_transforms = torch.hub.load(
+                    "intel-isl/MiDaS", "transforms",
+                    skip_validation=True,
+                )
             _midas_transform = midas_transforms.small_transform
             print("[VisionPipeline] MiDaS loaded OK")
         except Exception as e:
-            print(f"[VisionPipeline] MiDaS load error: {e}")
+            print(f"[VisionPipeline] WARNING: MiDaS model load failed ({e}). Depth estimation disabled; continuing with object detection.")
+            _midas_model = None
+            _midas_transform = None
 
         _models_loaded = True
 
@@ -188,6 +208,18 @@ def analyze_frame(frame_b64: str) -> dict:
                         det["distance_m"] = round(max(0.1, min(dist_m, 20.0)), 2)
         except Exception as e:
             print(f"[VisionPipeline] MiDaS error: {e}")
+
+    # Fallback distance estimation if MiDaS model is unavailable
+    for det in detections:
+        if det.get("distance_m") is None:
+            b = det["box"]
+            box_area_ratio = (b["x2"] - b["x1"]) * (b["y2"] - b["y1"]) / (FRAME_W * FRAME_H)
+            if box_area_ratio > 0.30:
+                det["distance_m"] = 0.6
+            elif box_area_ratio > 0.15:
+                det["distance_m"] = 1.2
+            elif box_area_ratio > 0.05:
+                det["distance_m"] = 2.5
 
     # ── 4. Autonomous Command Engine ──────────────────────────────
     command, scene_summary = _decide_command(detections, bgr)
