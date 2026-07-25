@@ -3,196 +3,132 @@
   "unit": "meters",
   "checkpoints": {
     "A": {
-      "x": 8.0,
-      "y": 6.0,
+      "x": 2.0,
+      "y": 2.0,
       "name": "Node A",
       "iconType": "general",
       "color": "#00FFCC"
     },
     "B": {
-      "x": 8.0,
+      "x": 2.0,
       "y": 3.0,
       "name": "Node B",
       "iconType": "general",
       "color": "#00FFCC"
     },
     "C": {
-      "x": 4.0,
+      "x": 3.0,
       "y": 3.0,
       "name": "Node C",
       "iconType": "general",
       "color": "#00FFCC"
     },
     "D": {
-      "x": 1.0,
-      "y": 3.0,
+      "x": 3.0,
+      "y": 2.0,
       "name": "Node D",
-      "iconType": "general",
-      "color": "#00FFCC"
-    },
-    "E": {
-      "x": 1.0,
-      "y": 1.0,
-      "name": "Node E",
-      "iconType": "general",
-      "color": "#00FFCC"
-    },
-    "F": {
-      "x": 4.0,
-      "y": 1.0,
-      "name": "Node F",
       "iconType": "general",
       "color": "#00FFCC"
     }
   },
   "connections": [
     {
-      "from": "B",
-      "to": "A",
-      "distance": 3.0,
+      "from": "A",
+      "to": "B",
+      "distance": 0.75,
       "path": [
         [
-          8.0,
-          3.0
+          2.0,
+          2.0
         ],
         [
-          8.0,
-          3.0
+          2.0,
+          2.0
         ],
         [
-          8.0,
-          6.0
+          2.0,
+          3.0
         ]
       ],
       "connection_type": "orthogonal",
       "control_points": [],
       "radius": null,
-      "length": 3.0,
+      "length": 0.75,
       "heading": 0.0,
       "curvature": 0.0
     },
     {
       "from": "B",
       "to": "C",
-      "distance": 4.0,
+      "distance": 0.8,
       "path": [
         [
-          8.0,
+          2.0,
           3.0
         ],
         [
-          4.0,
+          3.0,
           3.0
         ],
         [
-          4.0,
+          3.0,
           3.0
         ]
       ],
       "connection_type": "orthogonal",
       "control_points": [],
       "radius": null,
-      "length": 4.0,
+      "length": 0.8,
       "heading": 0.0,
       "curvature": 0.0
     },
     {
       "from": "C",
-      "to": "F",
-      "distance": 2.0,
+      "to": "D",
+      "distance": 0.8,
       "path": [
         [
-          4.0,
+          3.0,
           3.0
         ],
         [
-          4.0,
+          3.0,
           3.0
         ],
         [
-          4.0,
-          1.0
+          3.0,
+          2.0
         ]
       ],
       "connection_type": "orthogonal",
       "control_points": [],
       "radius": null,
-      "length": 2.0,
+      "length": 0.8,
       "heading": 0.0,
       "curvature": 0.0
     },
     {
       "from": "D",
-      "to": "C",
-      "distance": 3.0,
+      "to": "A",
+      "distance": 0.8,
       "path": [
         [
-          1.0,
-          3.0
+          3.0,
+          2.0
         ],
         [
-          4.0,
-          3.0
+          2.0,
+          2.0
         ],
         [
-          4.0,
-          3.0
+          2.0,
+          2.0
         ]
       ],
       "connection_type": "orthogonal",
       "control_points": [],
       "radius": null,
-      "length": 3.0,
-      "heading": 0.0,
-      "curvature": 0.0
-    },
-    {
-      "from": "E",
-      "to": "D",
-      "distance": 2.0,
-      "path": [
-        [
-          1.0,
-          1.0
-        ],
-        [
-          1.0,
-          1.0
-        ],
-        [
-          1.0,
-          3.0
-        ]
-      ],
-      "connection_type": "orthogonal",
-      "control_points": [],
-      "radius": null,
-      "length": 2.0,
-      "heading": 0.0,
-      "curvature": 0.0
-    },
-    {
-      "from": "E",
-      "to": "F",
-      "distance": 3.0,
-      "path": [
-        [
-          1.0,
-          1.0
-        ],
-        [
-          4.0,
-          1.0
-        ],
-        [
-          4.0,
-          1.0
-        ]
-      ],
-      "connection_type": "orthogonal",
-      "control_points": [],
-      "radius": null,
-      "length": 3.0,
+      "length": 0.8,
       "heading": 0.0,
       "curvature": 0.0
     }

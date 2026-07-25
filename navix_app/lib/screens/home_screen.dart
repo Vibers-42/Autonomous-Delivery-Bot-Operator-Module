@@ -1,4 +1,5 @@
-// ignore_for_file: unused_element
+import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:navix_app/providers/robot_state_provider.dart';
@@ -24,6 +25,10 @@ class HomeScreen extends StatelessWidget {
           // ── Hero Header ─────────────────────────────────────────────────
           _buildHeroHeader(),
           const SizedBox(height: 20),
+
+          // ── Live VisionStream Robot Sensor Hub & Camera Card ────────────
+          _buildLiveCameraAndPhoneSensorCard(provider),
+          const SizedBox(height: 24),
 
           // ── Live Telemetry Strip with Rolling Sparklines & Polar Radar ────
           _buildTelemetryStrip(provider),
@@ -94,6 +99,273 @@ class HomeScreen extends StatelessWidget {
               ],
             ),
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLiveCameraAndPhoneSensorCard(RobotStateProvider provider) {
+    final bool isPhoneConnected = provider.phoneConnected;
+    final String frameB64 = provider.cameraFrame;
+    final Map<String, dynamic> gps = provider.gps;
+    final Map<String, dynamic> imu = provider.imu;
+    final Map<String, dynamic> battery = provider.phoneBattery;
+    Uint8List? imageBytes;
+
+    if (frameB64.isNotEmpty) {
+      try {
+        imageBytes = base64Decode(frameB64);
+      } catch (_) {}
+    }
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: HudColors.cardBg,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: isPhoneConnected ? HudColors.teal : Colors.grey.shade800,
+          width: 1.5,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.videocam_rounded,
+                color: isPhoneConnected ? HudColors.teal : Colors.grey,
+                size: 20,
+              ),
+              const SizedBox(width: 10),
+              const Text(
+                "VISIONSTREAM ROBOT SENSOR HUB & LIVE CAMERA",
+                style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 13,
+                  letterSpacing: 1.1,
+                ),
+              ),
+              const Spacer(),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: (isPhoneConnected ? HudColors.teal : Colors.redAccent).withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: isPhoneConnected ? HudColors.teal : Colors.redAccent,
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 8,
+                      height: 8,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: isPhoneConnected ? HudColors.teal : Colors.redAccent,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      isPhoneConnected ? "PHONE CONNECTED" : "PHONE DISCONNECTED",
+                      style: TextStyle(
+                        color: isPhoneConnected ? HudColors.teal : Colors.redAccent,
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final isWide = constraints.maxWidth > 650;
+              return isWide
+                  ? Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(flex: 3, child: _buildVideoFrameBox(imageBytes, isPhoneConnected, provider)),
+                        const SizedBox(width: 16),
+                        Expanded(flex: 2, child: _buildPhoneTelemetryBox(gps, imu, battery)),
+                      ],
+                    )
+                  : Column(
+                      children: [
+                        _buildVideoFrameBox(imageBytes, isPhoneConnected, provider),
+                        const SizedBox(height: 16),
+                        _buildPhoneTelemetryBox(gps, imu, battery),
+                      ],
+                    );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildVideoFrameBox(Uint8List? imageBytes, bool isConnected, RobotStateProvider provider) {
+    final detections = provider.visionDetections;
+
+    return Container(
+      height: 240,
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: Colors.black,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.white12),
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: imageBytes != null
+            ? Stack(
+                fit: StackFit.expand,
+                children: [
+                  Image.memory(
+                    imageBytes,
+                    fit: BoxFit.cover,
+                    gaplessPlayback: true,
+                  ),
+                  // Bounding Box and Object Label Overlay
+                  LayoutBuilder(
+                    builder: (context, constraints) {
+                      final containerW = constraints.maxWidth;
+                      final containerH = constraints.maxHeight;
+
+                      return Stack(
+                        children: detections.map((det) {
+                          final box = det['box'] ?? {};
+                          final String label = det['label'] ?? 'object';
+                          final double conf = ((det['confidence'] ?? 0.0) as num).toDouble();
+                          final double? dist = det['distance_m'] != null ? ((det['distance_m']) as num).toDouble() : null;
+
+                          // Scale normalized coordinates to container dimensions (Assumes 640x480 native stream)
+                          final double x1 = (box['x1'] ?? 0) / 640.0 * containerW;
+                          final double y1 = (box['y1'] ?? 0) / 480.0 * containerH;
+                          final double w = ((box['x2'] ?? 0) - (box['x1'] ?? 0)) / 640.0 * containerW;
+                          final double h = ((box['y2'] ?? 0) - (box['y1'] ?? 0)) / 480.0 * containerH;
+
+                          final bool isObstacle = det['is_obstacle'] ?? false;
+                          final Color boxColor = isObstacle ? Colors.redAccent : HudColors.teal;
+
+                          return Positioned(
+                            left: x1.clamp(0, containerW),
+                            top: y1.clamp(0, containerH),
+                            width: w.clamp(10, containerW),
+                            height: h.clamp(10, containerH),
+                            child: Container(
+                              decoration: BoxDecoration(
+                                border: Border.all(color: boxColor, width: 2),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Stack(
+                                clipBehavior: Clip.none,
+                                children: [
+                                  Positioned(
+                                    top: -20,
+                                    left: 0,
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: boxColor,
+                                        borderRadius: BorderRadius.circular(3),
+                                      ),
+                                      child: Text(
+                                        "${label.toUpperCase()} ${(conf * 100).toStringAsFixed(0)}%${dist != null ? ' | ${dist}m' : ''}",
+                                        style: const TextStyle(
+                                          color: Colors.black,
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        }).toList(),
+                      );
+                    },
+                  ),
+                ],
+              )
+            : Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      isConnected ? Icons.videocam_outlined : Icons.videocam_off_outlined,
+                      color: isConnected ? HudColors.teal : Colors.grey,
+                      size: 36,
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      isConnected
+                          ? "Waiting for Camera Stream from Phone..."
+                          : "VisionStream Phone App Not Connected",
+                      style: TextStyle(
+                        color: isConnected ? HudColors.teal : Colors.white54,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+      ),
+    );
+  }
+
+  Widget _buildPhoneTelemetryBox(Map<String, dynamic> gps, Map<String, dynamic> imu, Map<String, dynamic> battery) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0F151F),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.white10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            "REAL PHONE SENSOR DATA",
+            style: TextStyle(
+              color: HudColors.teal,
+              fontWeight: FontWeight.bold,
+              fontSize: 12,
+            ),
+          ),
+          const Divider(color: Colors.white12, height: 16),
+          _phoneTelemetryRow("GPS Lat/Lon", "${gps['lat'] ?? 0.0}, ${gps['lon'] ?? 0.0}"),
+          _phoneTelemetryRow("GPS Speed", "${gps['speed'] ?? 0.0} m/s"),
+          _phoneTelemetryRow("GPS Heading", "${gps['heading'] ?? 0.0}°"),
+          _phoneTelemetryRow("GPS Accuracy", "${gps['accuracy'] ?? 0.0} m"),
+          const SizedBox(height: 8),
+          _phoneTelemetryRow("IMU Roll", "${imu['roll'] ?? 0.0}°"),
+          _phoneTelemetryRow("IMU Pitch", "${imu['pitch'] ?? 0.0}°"),
+          _phoneTelemetryRow("IMU Yaw", "${imu['yaw'] ?? 0.0}°"),
+          const SizedBox(height: 8),
+          _phoneTelemetryRow("Phone Battery", "${battery['level'] ?? 100}% ${battery['charging'] == true ? '(Charging)' : ''}"),
+        ],
+      ),
+    );
+  }
+
+  Widget _phoneTelemetryRow(String label, String val) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2.5),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label, style: const TextStyle(color: Colors.white60, fontSize: 11)),
+          Text(val, style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
         ],
       ),
     );
@@ -489,285 +761,6 @@ class HomeScreen extends StatelessWidget {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Active Mission Monitor
-  // ─────────────────────────────────────────────────────────────────────────
-  Widget _buildMissionMonitor(RobotStateProvider provider) {
-    final Color statusColor = _missionStatusColor(provider.missionStatus);
-    
-    // Determine the current action string & color
-    String actionStr = "Idle";
-    Color actionColor = HudColors.textMuted;
-    
-    if (provider.missionStatus == "COMPLETED") {
-      if (provider.rampStatus == "CLOSED") {
-        actionStr = "Mission Completed";
-        actionColor = HudColors.teal;
-      } else if (provider.rampStatus == "CLOSING") {
-        actionStr = "Closing Ramp";
-        actionColor = HudColors.amber;
-      } else if (provider.rampStatus == "OPEN") {
-        actionStr = "Ramp Open";
-        actionColor = HudColors.teal;
-      } else if (provider.rampStatus == "OPENING") {
-        actionStr = "Opening Ramp";
-        actionColor = HudColors.amber;
-      }
-    } else if (provider.distanceSensor <= 20.0) {
-      actionStr = "Obstacle Detected";
-      actionColor = HudColors.magenta;
-    } else if (provider.robotStatus == "WAITING" || provider.lastApiResponse.contains("WAITING")) {
-      actionStr = "Obstacle Avoidance";
-      actionColor = Colors.orange;
-    } else if (provider.activeCommand == "FORWARD") {
-      actionStr = "Heading Straight";
-      actionColor = Colors.blue;
-    } else if (provider.activeCommand == "LEFT") {
-      actionStr = "Turning Left";
-      actionColor = HudColors.amber;
-    } else if (provider.activeCommand == "RIGHT") {
-      actionStr = "Turning Right";
-      actionColor = HudColors.amber;
-    } else if (provider.rampStatus == "OPENING") {
-      actionStr = "Opening Ramp";
-      actionColor = HudColors.amber;
-    } else if (provider.rampStatus == "OPEN") {
-      actionStr = "Ramp Open";
-      actionColor = HudColors.teal;
-    } else if (provider.rampStatus == "CLOSING") {
-      actionStr = "Closing Ramp";
-      actionColor = HudColors.amber;
-    } else if (provider.activeCommand == "STOP") {
-      actionStr = "Waiting";
-      actionColor = Colors.orange;
-    }
-
-    // Dynamic Mission ID
-    final String missionId = "MSN-2026-${provider.sourceCheckpoint}${provider.destinationCheckpoint}".toUpperCase();
-
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: HudColors.cardBg,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: statusColor.withValues(alpha: 0.4), width: 1.5),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Header Row
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Row(
-                children: [
-                  Container(
-                    width: 3,
-                    height: 16,
-                    color: statusColor,
-                  ),
-                  const SizedBox(width: 8),
-                  const Text(
-                    "AMR MISSION CONTROL CENTER // REAL-TIME EXECUTION",
-                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 11, letterSpacing: 1.2),
-                  ),
-                ],
-              ),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: statusColor.withValues(alpha: 0.15),
-                  borderRadius: BorderRadius.circular(4),
-                  border: Border.all(color: statusColor.withValues(alpha: 0.5), width: 1),
-                ),
-                child: Text(
-                  provider.missionStatus,
-                  style: TextStyle(color: statusColor, fontSize: 9, fontWeight: FontWeight.bold, fontFamily: 'monospace'),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-
-          // First Layout Row: Mission Info & Progress Bar
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                flex: 4,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text("MISSION DETAILS", style: TextStyle(color: HudColors.textMuted, fontSize: 9, fontWeight: FontWeight.bold)),
-                    const SizedBox(height: 8),
-                    _buildTelemetryValueRow("Mission ID", missionId),
-                    const SizedBox(height: 4),
-                    _buildTelemetryValueRow("Source Checkpoint", provider.sourceCheckpoint),
-                    const SizedBox(height: 4),
-                    _buildTelemetryValueRow("Destination Checkpoint", provider.destinationCheckpoint),
-                    const SizedBox(height: 4),
-                    _buildTelemetryValueRow("Current Node", provider.currentCheckpoint),
-                    const SizedBox(height: 4),
-                    _buildTelemetryValueRow("Next Target Node", provider.nextCheckpoint.isEmpty ? "—" : provider.nextCheckpoint),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 24),
-              Expanded(
-                flex: 5,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _buildMissionProgressBar(provider),
-                    const SizedBox(height: 14),
-                    const Text("PATH VISUALIZER", style: TextStyle(color: HudColors.textMuted, fontSize: 9, fontWeight: FontWeight.bold)),
-                    const SizedBox(height: 8),
-                    _buildPathVisualizer(provider),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          const Divider(color: HudColors.border, height: 24),
-
-          // Second Layout Row: Robot Status Badge & Obstacle Sonar & Battery Status
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Robot Status
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text("ROBOT STATUS", style: TextStyle(color: HudColors.textMuted, fontSize: 9, fontWeight: FontWeight.bold)),
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                          decoration: BoxDecoration(
-                            color: actionColor.withValues(alpha: 0.15),
-                            borderRadius: BorderRadius.circular(4),
-                            border: Border.all(color: actionColor.withValues(alpha: 0.6), width: 1.5),
-                          ),
-                          child: Text(
-                            actionStr.toUpperCase(),
-                            style: TextStyle(color: actionColor, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 0.5),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    const Text("SERVO & DELIVERY STATUS", style: TextStyle(color: HudColors.textMuted, fontSize: 9, fontWeight: FontWeight.bold)),
-                    const SizedBox(height: 6),
-                    _buildTelemetryValueRow("Ramp State", provider.rampStatus),
-                    const SizedBox(height: 4),
-                    _buildTelemetryValueRow("Delivery Complete", provider.deliveryComplete ? "✓ YES" : "NO"),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 16),
-
-              // Obstacle Detection
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text("OBSTACLE DETECTION", style: TextStyle(color: HudColors.textMuted, fontSize: 9, fontWeight: FontWeight.bold)),
-                    const SizedBox(height: 8),
-                    _buildObstacleAvoidanceCard(provider),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 16),
-
-              // Battery & Power
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text("POWER SYSTEM", style: TextStyle(color: HudColors.textMuted, fontSize: 9, fontWeight: FontWeight.bold)),
-                    const SizedBox(height: 8),
-                    _buildPowerSystemCard(provider),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          const Divider(color: HudColors.border, height: 24),
-
-          // Third Layout Row: PID monitor & Turn execution
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                flex: 5,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text("CLOSED-LOOP PID MOTION MONITOR", style: TextStyle(color: HudColors.textMuted, fontSize: 9, fontWeight: FontWeight.bold)),
-                    const SizedBox(height: 8),
-                    _buildPidMonitor(provider),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 24),
-              Expanded(
-                flex: 4,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text("TURNING CONTROLLER", style: TextStyle(color: HudColors.textMuted, fontSize: 9, fontWeight: FontWeight.bold)),
-                    const SizedBox(height: 8),
-                    _buildTurnExecution(provider),
-                    const SizedBox(height: 12),
-                    const Text("ODOMETRY & KINEMATICS", style: TextStyle(color: HudColors.textMuted, fontSize: 9, fontWeight: FontWeight.bold)),
-                    const SizedBox(height: 8),
-                    _buildOdometryGrid(provider),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          const Divider(color: HudColors.border, height: 24),
-
-          // Fourth Layout Row: Real-time Mission log
-          const Text("LIVE MISSION LOGS", style: TextStyle(color: HudColors.textMuted, fontSize: 9, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 8),
-          Container(
-            height: 120,
-            width: double.infinity,
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: HudColors.bg,
-              borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: HudColors.border),
-            ),
-            child: provider.missionLogs.isEmpty
-                ? const Center(
-                    child: Text(
-                      "NO LOGS RECORDED YET",
-                      style: TextStyle(color: HudColors.textMuted, fontSize: 9, fontFamily: 'monospace'),
-                    ),
-                  )
-                : MissionLogViewer(logs: provider.missionLogs),
-          ),
-
-          const SizedBox(height: 16),
-          // View Mission button
-          OutlinedButton.icon(
-            onPressed: () => onTabChange(1),
-            icon: const Icon(Icons.open_in_full_rounded, size: 14, color: HudColors.teal),
-            label: const Text("VIEW FULL MISSION PLANNER", style: TextStyle(color: HudColors.teal, fontSize: 11, fontWeight: FontWeight.bold)),
-            style: OutlinedButton.styleFrom(
-              side: const BorderSide(color: HudColors.teal, width: 1),
-              minimumSize: const Size(double.infinity, 40),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
 
   Widget _buildTelemetryValueRow(String label, String value, {Color? valueColor}) {
     return Row(

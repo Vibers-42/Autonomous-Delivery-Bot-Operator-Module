@@ -116,6 +116,36 @@ class RobotStateProvider extends ChangeNotifier {
   double _pidOutput = 0.0;
   final List<LogEntry> _missionLogs = [];
 
+  // VisionStream Hardware Sensor Hub Telemetry
+  bool _phoneConnected = false;
+  String _cameraFrame = "";
+  Map<String, dynamic> _gps = {};
+  Map<String, dynamic> _imu = {};
+  Map<String, dynamic> _phoneBattery = {};
+  Map<String, dynamic> _phoneStatus = {};
+
+  bool get phoneConnected => _phoneConnected;
+  String get cameraFrame => _cameraFrame;
+  Map<String, dynamic> get gps => _gps;
+  Map<String, dynamic> get imu => _imu;
+  Map<String, dynamic> get phoneBattery => _phoneBattery;
+  Map<String, dynamic> get phoneStatus => _phoneStatus;
+
+  // Vision AI Pipeline State
+  String _visionCommand = 'FORWARD';
+  String _visionSceneSummary = '';
+  double _visionFps = 0.0;
+  bool _visionEnabled = false;
+  bool _visionAutoMode = false;
+  List<Map<String, dynamic>> _visionDetections = [];
+
+  String get visionCommand => _visionCommand;
+  String get visionSceneSummary => _visionSceneSummary;
+  double get visionFps => _visionFps;
+  bool get visionEnabled => _visionEnabled;
+  bool get visionAutoMode => _visionAutoMode;
+  List<Map<String, dynamic>> get visionDetections => _visionDetections;
+
   // Obstacle avoidance settings & status variables
   bool _obstacleAvoidanceEnabled = true;
   double _avoidanceAngle = 5.0;
@@ -375,13 +405,31 @@ class RobotStateProvider extends ChangeNotifier {
     
     _telemetrySubscription = telemetryStream.listen(
       (data) {
+        // ── Route fast message types without full telemetry parse ──
+        final String msgType = data['type'] ?? '';
+        if (msgType == 'frame_update') {
+          // Direct frame broadcast — update only the camera frame
+          _cameraFrame = data['frame'] ?? _cameraFrame;
+          notifyListeners();
+          return;
+        }
+        if (msgType == 'vision_update') {
+          // YOLO detection result
+          _visionCommand = data['command'] ?? _visionCommand;
+          _visionSceneSummary = data['scene_summary'] ?? _visionSceneSummary;
+          _visionFps = (data['fps'] as num?)?.toDouble() ?? _visionFps;
+          _visionDetections = (data['detections'] as List?)?.map((d) => Map<String, dynamic>.from(d as Map)).toList() ?? _visionDetections;
+          notifyListeners();
+          return;
+        }
+
         if (!_wasEverConnected) {
           // First successful frame — reset backoff
           _wasEverConnected = true;
           _wsReconnectDelaySec = 2;
         }
         _aiBackendConnected = true;
-        _connectionError = "";
+        _connectionError = '';
         
         // Parse incoming telemetry JSON
         _esp32Connected = data["esp32_connected"] ?? false;
@@ -452,6 +500,24 @@ class RobotStateProvider extends ChangeNotifier {
         // Parse Free Roam telemetry
         _freeRoamActive = data["free_roam_active"] ?? _freeRoamActive;
         _freeRoamState  = data["free_roam_state"]  ?? _freeRoamState;
+
+        // Parse VisionStream Phone Sensor Hub Telemetry
+        _phoneConnected = data['phone_connected'] ?? false;
+        // camera_frame is now delivered separately via frame_update message
+        _gps = data['gps'] is Map ? Map<String, dynamic>.from(data['gps']) : {};
+        _imu = data['imu'] is Map ? Map<String, dynamic>.from(data['imu']) : {};
+        _phoneBattery = data['phone_battery'] is Map ? Map<String, dynamic>.from(data['phone_battery']) : {};
+        _phoneStatus = data['phone_status'] is Map ? Map<String, dynamic>.from(data['phone_status']) : {};
+
+        // Parse Vision AI telemetry
+        _visionCommand = data['vision_command'] ?? _visionCommand;
+        _visionSceneSummary = data['vision_scene_summary'] ?? _visionSceneSummary;
+        _visionFps = (data['vision_fps'] as num?)?.toDouble() ?? _visionFps;
+        _visionEnabled = data['vision_enabled'] ?? _visionEnabled;
+        _visionAutoMode = data['vision_auto_mode'] ?? _visionAutoMode;
+        if (data['vision_detections'] is List) {
+          _visionDetections = (data['vision_detections'] as List).map((d) => Map<String, dynamic>.from(d as Map)).toList();
+        }
 
         // If automatic mission finishes, update status
         if ((_robotMode == "auto" && _robotStatus == "STOPPED" && _missionProgress >= 100.0 && _missionStatus == "RUNNING") || _deliveryComplete) {

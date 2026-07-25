@@ -11,6 +11,7 @@ import httpx
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 
@@ -19,6 +20,14 @@ from map_analyzer import MapAnalyzer
 from path_planner import PathPlanner
 import google.generativeai as genai
 import PIL.Image
+
+# Vision Pipeline (YOLO + MiDaS)
+try:
+    import vision_pipeline
+    VISION_AVAILABLE = True
+except ImportError as _ve:
+    print(f"[VisionPipeline] Not available: {_ve}")
+    VISION_AVAILABLE = False
 
 # Configure Google Gemini API key
 GEMINI_API_KEY = "AIzaSyBmPlrLcbKRf7kmHw8BMnoNCxi5VnE83Zo"
@@ -50,7 +59,12 @@ async def lifespan(app: FastAPI):
     # Start the ESP32 health-check background loop (every 5 s)
     asyncio.create_task(esp32_health_check_loop())
     print(f"ESP32 health-check started — targeting http://{robot.esp32_ip}/status every 5s")
-    
+
+    # Preload YOLO + MiDaS in background so they're warm on first frame
+    if VISION_AVAILABLE:
+        vision_pipeline.preload_models()
+        print("[VisionPipeline] Model preload started in background thread")
+
     yield
     
     # Shutdown code
@@ -76,6 +90,11 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 MAPS_DIR = os.path.join(UPLOAD_DIR, "maps")
 os.makedirs(MAPS_DIR, exist_ok=True)
 app.mount("/static", StaticFiles(directory=UPLOAD_DIR), name="static")
+
+# Mount Navix Flutter Web App static build directory if available
+WEB_APP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "navix_app", "build", "web"))
+if os.path.exists(WEB_APP_DIR):
+    app.mount("/app", StaticFiles(directory=WEB_APP_DIR, html=True), name="navix_web_app")
 
 # Calibration Constants
 TURN_SPEED = 150              # PWM speed for turning
@@ -214,6 +233,23 @@ class RobotState:
         self.metric_checkpoints = {}
         self.connections = []
         self.detected_unit = "m"
+
+        # VisionStream Phone Sensor Hub Telemetry
+        self.phone_connected = False
+        self.camera_frame = ""
+        self.gps = {"lat": 0.0, "lon": 0.0, "speed": 0.0, "heading": 0.0, "altitude": 0.0, "accuracy": 0.0}
+        self.imu = {"ax": 0.0, "ay": 0.0, "az": 9.81, "gx": 0.0, "gy": 0.0, "gz": 0.0, "mx": 0.0, "my": 0.0, "mz": 0.0, "roll": 0.0, "pitch": 0.0, "yaw": 0.0}
+        self.phone_battery = {"level": 100, "charging": False, "temperature": 25.0}
+        self.phone_status = {"wifi_signal": -50, "avail_mem_mb": 2048, "storage_free_gb": 16.0}
+
+        # Vision Pipeline (YOLO + MiDaS) state
+        self.vision_auto_mode = True          # Fully autonomous: AI drives the bot
+        self.vision_enabled = True            # Master vision on/off switch
+        self.vision_detections = []           # Latest YOLO detections list
+        self.vision_command = "FORWARD"       # Latest AI-generated command
+        self.vision_scene_summary = ""        # Human-readable scene description
+        self.vision_fps = 0.0                 # Pipeline throughput
+        self._vision_processing = False       # Frame processing semaphore
 
 robot = RobotState()
 
@@ -1546,7 +1582,21 @@ def get_telemetry_payload():
         "pure_pursuit_status": robot.pure_pursuit_status,
         # Free Roam telemetry
         "free_roam_active": robot.free_roam_active,
-        "free_roam_state": robot.free_roam_state
+        "free_roam_state": robot.free_roam_state,
+        # VisionStream Phone Sensor Hub Telemetry
+        "phone_connected": getattr(robot, "phone_connected", False),
+        "camera_frame": getattr(robot, "camera_frame", ""),
+        "gps": getattr(robot, "gps", {"lat": 0.0, "lon": 0.0, "speed": 0.0, "heading": 0.0, "altitude": 0.0, "accuracy": 0.0}),
+        "imu": getattr(robot, "imu", {"ax": 0.0, "ay": 0.0, "az": 9.81, "gx": 0.0, "gy": 0.0, "gz": 0.0, "mx": 0.0, "my": 0.0, "mz": 0.0, "roll": 0.0, "pitch": 0.0, "yaw": 0.0}),
+        "phone_battery": getattr(robot, "phone_battery", {"level": 100, "charging": False, "temperature": 25.0}),
+        "phone_status": getattr(robot, "phone_status", {"wifi_signal": -50, "avail_mem_mb": 2048, "storage_free_gb": 16.0}),
+        # Vision AI pipeline telemetry
+        "vision_command": getattr(robot, "vision_command", "FORWARD"),
+        "vision_scene_summary": getattr(robot, "vision_scene_summary", ""),
+        "vision_fps": getattr(robot, "vision_fps", 0.0),
+        "vision_enabled": getattr(robot, "vision_enabled", False),
+        "vision_auto_mode": getattr(robot, "vision_auto_mode", False),
+        "vision_detections": getattr(robot, "vision_detections", []),
     }
 
 # API Endpoints
@@ -2445,8 +2495,149 @@ async def websocket_telemetry(websocket: WebSocket):
         print(f"WebSocket error: {e}")
         manager.disconnect(websocket)
 
-# (startup and shutdown logic moved to lifespan)
+# WebSockets Inbound Sensor Stream Receiver for VisionStream Phone App
+@app.websocket("/ws/robot-stream")
+async def websocket_robot_stream(websocket: WebSocket):
+    await websocket.accept()
+    robot.phone_connected = True
+    print("[VisionStream] Hardware Sensor Hub Phone Connected!")
+    try:
+        # Tell phone to immediately start camera frame streaming
+        await websocket.send_json({"action": "START_CAMERA"})
+    except Exception:
+        pass
+    try:
+        while True:
+            data_text = await websocket.receive_text()
+            try:
+                data = json.loads(data_text)
+                msg_type = data.get("type")
+                if msg_type == "sensor":
+                    if "gps" in data:
+                        robot.gps = data["gps"]
+                    if "imu" in data:
+                        robot.imu = data["imu"]
+                        if "yaw" in data["imu"]:
+                            robot.yaw = data["imu"]["yaw"]
+                    if "battery" in data:
+                        robot.phone_battery = data["battery"]
+                    if "status" in data:
+                        robot.phone_status = data["status"]
+                elif msg_type == "image":
+                    frame_b64 = data.get("frame", "")
+                    robot.camera_frame = frame_b64
+                    # Broadcast raw frame instantly to all dashboard clients
+                    # This is separate from the 10Hz telemetry loop to avoid lag.
+                    if frame_b64:
+                        await manager.broadcast({
+                            "type": "frame_update",
+                            "frame": frame_b64,
+                            "timestamp": data.get("timestamp", 0),
+                            "width": data.get("width", 640),
+                            "height": data.get("height", 480),
+                        })
+                    # Run vision pipeline asynchronously if enabled and not already processing
+                    if (VISION_AVAILABLE and robot.vision_enabled
+                            and frame_b64 and not robot._vision_processing):
+                        robot._vision_processing = True
+                        asyncio.create_task(_process_vision_frame(frame_b64))
+                elif msg_type == "pong":
+                    pass
+            except Exception:
+                pass
+    except WebSocketDisconnect:
+        print("[VisionStream] Hardware Sensor Hub Phone Disconnected.")
+        robot.phone_connected = False
+    except Exception as e:
+        print(f"[VisionStream] Stream error: {e}")
+        robot.phone_connected = False
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Vision Pipeline Integration
+# ─────────────────────────────────────────────────────────────────────────────
+async def _process_vision_frame(frame_b64: str):
+    """Runs YOLO+MiDaS in a thread pool, stores results, sends ESP32 command."""
+    try:
+        result = await asyncio.to_thread(vision_pipeline.analyze_frame, frame_b64)
+        robot.vision_detections = result.get("detections", [])
+        robot.vision_command = result.get("command", "FORWARD")
+        robot.vision_scene_summary = result.get("scene_summary", "")
+        robot.vision_fps = result.get("fps", 0.0)
+
+        # ── Autonomous Mode: send command to ESP32 ────────────────
+        if robot.vision_auto_mode and robot.esp32_connected:
+            cmd = robot.vision_command
+            esp32_cmd_map = {
+                "FORWARD":    "FORWARD",
+                "STOP":       "STOP",
+                "SLOW":       "SLOW",
+                "TURN_LEFT":  "LEFT",
+                "TURN_RIGHT": "RIGHT",
+            }
+            esp32_cmd = esp32_cmd_map.get(cmd, "STOP")
+            try:
+                global esp32_client
+                if esp32_client is None:
+                    import httpx
+                    esp32_client = httpx.AsyncClient(timeout=1.0)
+                await esp32_client.get(
+                    f"http://{robot.esp32_ip}/cmd",
+                    params={"cmd": esp32_cmd},
+                )
+            except Exception as _ce:
+                pass  # ESP32 unreachable; ignore silently
+
+        # ── Broadcast detections to Navix dashboard via telemetry WS ──
+        vision_update = {
+            "type": "vision_update",
+            "command": robot.vision_command,
+            "detections": robot.vision_detections,
+            "scene_summary": robot.vision_scene_summary,
+            "fps": robot.vision_fps,
+        }
+        await manager.broadcast(json.dumps(vision_update))
+    except Exception as e:
+        print(f"[VisionPipeline] Frame processing error: {e}")
+    finally:
+        robot._vision_processing = False
+
+
+@app.post("/api/vision/toggle")
+async def toggle_vision(enabled: Optional[bool] = None, auto_mode: Optional[bool] = None):
+    """Enable/disable vision pipeline or autonomous mode."""
+    if enabled is not None:
+        robot.vision_enabled = enabled
+    if auto_mode is not None:
+        robot.vision_auto_mode = auto_mode
+    return {
+        "vision_enabled": robot.vision_enabled,
+        "vision_auto_mode": robot.vision_auto_mode,
+        "models_loaded": VISION_AVAILABLE and vision_pipeline._models_loaded if VISION_AVAILABLE else False,
+    }
+
+
+@app.get("/api/vision/status")
+async def vision_status():
+    """Return latest vision pipeline results."""
+    return {
+        "vision_enabled": robot.vision_enabled,
+        "vision_auto_mode": robot.vision_auto_mode,
+        "command": robot.vision_command,
+        "scene_summary": robot.vision_scene_summary,
+        "fps": robot.vision_fps,
+        "detections": robot.vision_detections,
+        "phone_connected": robot.phone_connected,
+        "models_loaded": VISION_AVAILABLE and vision_pipeline._models_loaded if VISION_AVAILABLE else False,
+    }
+
+
+@app.get("/")
+async def serve_root():
+    index_path = os.path.join(WEB_APP_DIR, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    return {"message": "Navix AI AMR Backend Server is running."}
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
