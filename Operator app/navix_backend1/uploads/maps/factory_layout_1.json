@@ -1,0 +1,207 @@
+{
+  "map_name": "Factory Layout 1",
+  "unit": "meters",
+  "checkpoints": {
+    "A": {
+      "x": 1.0,
+      "y": 5.0,
+      "name": "Node A",
+      "iconType": "general",
+      "color": "#00FFCC"
+    },
+    "B": {
+      "x": 1.0,
+      "y": 1.0,
+      "name": "Node B",
+      "iconType": "general",
+      "color": "#00FFCC"
+    },
+    "C": {
+      "x": 3.0,
+      "y": 1.0,
+      "name": "Node C",
+      "iconType": "general",
+      "color": "#00FFCC"
+    },
+    "D": {
+      "x": 3.0,
+      "y": 3.0,
+      "name": "Node D",
+      "iconType": "general",
+      "color": "#00FFCC"
+    },
+    "E": {
+      "x": 5.0,
+      "y": 3.0,
+      "name": "Node E",
+      "iconType": "general",
+      "color": "#00FFCC"
+    },
+    "F": {
+      "x": 5.0,
+      "y": 4.0,
+      "name": "Node F",
+      "iconType": "general",
+      "color": "#00FFCC"
+    },
+    "G": {
+      "x": 8.0,
+      "y": 4.0,
+      "name": "Node G",
+      "iconType": "general",
+      "color": "#00FFCC"
+    }
+  },
+  "connections": [
+    {
+      "from": "A",
+      "to": "B",
+      "distance": 4.0,
+      "path": [
+        [
+          1.0,
+          5.0
+        ],
+        [
+          1.0,
+          5.0
+        ],
+        [
+          1.0,
+          1.0
+        ]
+      ],
+      "connection_type": "orthogonal",
+      "control_points": [],
+      "radius": null,
+      "length": 4.0,
+      "heading": 0.0,
+      "curvature": 0.0
+    },
+    {
+      "from": "B",
+      "to": "C",
+      "distance": 2.0,
+      "path": [
+        [
+          1.0,
+          1.0
+        ],
+        [
+          3.0,
+          1.0
+        ],
+        [
+          3.0,
+          1.0
+        ]
+      ],
+      "connection_type": "orthogonal",
+      "control_points": [],
+      "radius": null,
+      "length": 2.0,
+      "heading": 0.0,
+      "curvature": 0.0
+    },
+    {
+      "from": "C",
+      "to": "D",
+      "distance": 2.0,
+      "path": [
+        [
+          3.0,
+          1.0
+        ],
+        [
+          3.0,
+          1.0
+        ],
+        [
+          3.0,
+          3.0
+        ]
+      ],
+      "connection_type": "orthogonal",
+      "control_points": [],
+      "radius": null,
+      "length": 2.0,
+      "heading": 0.0,
+      "curvature": 0.0
+    },
+    {
+      "from": "D",
+      "to": "E",
+      "distance": 2.0,
+      "path": [
+        [
+          3.0,
+          3.0
+        ],
+        [
+          5.0,
+          3.0
+        ],
+        [
+          5.0,
+          3.0
+        ]
+      ],
+      "connection_type": "orthogonal",
+      "control_points": [],
+      "radius": null,
+      "length": 2.0,
+      "heading": 0.0,
+      "curvature": 0.0
+    },
+    {
+      "from": "E",
+      "to": "F",
+      "distance": 1.0,
+      "path": [
+        [
+          5.0,
+          3.0
+        ],
+        [
+          5.0,
+          3.0
+        ],
+        [
+          5.0,
+          4.0
+        ]
+      ],
+      "connection_type": "orthogonal",
+      "control_points": [],
+      "radius": null,
+      "length": 1.0,
+      "heading": 0.0,
+      "curvature": 0.0
+    },
+    {
+      "from": "F",
+      "to": "G",
+      "distance": 3.0,
+      "path": [
+        [
+          5.0,
+          4.0
+        ],
+        [
+          8.0,
+          4.0
+        ],
+        [
+          8.0,
+          4.0
+        ]
+      ],
+      "connection_type": "orthogonal",
+      "control_points": [],
+      "radius": null,
+      "length": 3.0,
+      "heading": 0.0,
+      "curvature": 0.0
+    }
+  ]
+}
