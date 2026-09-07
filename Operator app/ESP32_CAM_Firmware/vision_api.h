@@ -58,6 +58,13 @@ private:
   unsigned long _lastWifiCheckMs;
   unsigned long _lastStreamPushMs;
   void _checkWifiHealth();
+
+  // Frame-push resilience: when the backend is slow/unreachable, a blocking
+  // POST used to stall loop() (and therefore the UART heartbeat + nav-command
+  // reads) for up to the HTTPClient default of 5 s. We now use short timeouts
+  // and back off exponentially after consecutive failures.
+  int           _streamFailCount     = 0;
+  unsigned long _streamBackoffUntil  = 0;
 };
 
 extern VisionAPI visionApi;

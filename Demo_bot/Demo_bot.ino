@@ -142,7 +142,7 @@ const float   GYRO_Z_SIGN  = -1.0f;  // -1.0f = chip mounted upside-down or Z in
 const float          GYRO_DEADBAND          = 0.30f;   // deg/s — ignores tiny noise at rest
 const float          TURN_TARGET            = 90.0f;   // degrees for a standard turn
 const float          TURN_TOLERANCE         = 3.0f;    // deg — tighter = more accurate stops
-const unsigned long  TURN_TIMEOUT_MS        = 14000UL;
+const unsigned long  TURN_TIMEOUT_MS        = 4500UL;   // 4.5 s cap for a 90° pivot — a gyro that stalls no longer locks the mission for 14 s
 const unsigned long  TURN_STUCK_TIMEOUT_MS  = 3000UL;
 const unsigned long  TURN_DEBUG_INTERVAL_MS =  200UL;
 
@@ -349,9 +349,12 @@ void setup() {
   server.on("/start", HTTP_GET, []() {
     // Only abort an active turn if it is NOT an LDE-protected turn
     if (!lde_turnProtected) abortActiveTurn = true;
-    startMission();
+    // Reply BEFORE startMission() — that call does ~3 s of blocking gyro/accel
+    // calibration, and holding the HTTP response open that long makes the
+    // backend's /start await time out and delays the whole mission handshake.
     server.send(200, "text/plain", "STARTED");
     Serial.println("[MISSION] Started from web");
+    startMission();
   });
 
   server.on("/stop", HTTP_GET, []() {

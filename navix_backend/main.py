@@ -250,8 +250,11 @@ class RobotState:
         self.phone_status = {"wifi_signal": -50, "avail_mem_mb": 2048, "storage_free_gb": 16.0}
 
         # Vision Pipeline (YOLO + MiDaS) state
-        self.vision_auto_mode = True          # Fully autonomous: AI drives the bot
-        self.vision_enabled = True            # Master vision on/off switch
+        # Both default OFF — the operator opts in via POST /api/vision/toggle.
+        # (Previously defaulted ON, so YOLO+MiDaS ran on every stream frame from
+        # boot and auto-mode tried to actuate the robot with no confirmation.)
+        self.vision_auto_mode = False         # Fully autonomous: AI drives the bot
+        self.vision_enabled = False           # Master vision on/off switch
         self.vision_detections = []           # Latest YOLO detections list
         self.vision_command = "FORWARD"       # Latest AI-generated command
         self.vision_scene_summary = ""        # Human-readable scene description
@@ -270,21 +273,45 @@ class ConnectionManager:
         self.active_connections.append(websocket)
 
     def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
 
     async def broadcast(self, message: dict):
-        for connection in self.active_connections:
+        # Iterate a snapshot so a concurrent disconnect can't corrupt the loop,
+        # and drop any socket that errors instead of retrying (and awaiting a
+        # timeout on) it every tick — dead clients otherwise pile up and slow
+        # the 10 Hz telemetry loop over a long session.
+        dead = []
+        for connection in list(self.active_connections):
             try:
-                await connection.send_json(message)
+                # Cap each send so one wedged client can't stall the 10 Hz loop.
+                await asyncio.wait_for(connection.send_json(message), timeout=1.0)
             except Exception:
-                # Connection might be closed
-                pass
+                dead.append(connection)
+        for connection in dead:
+            self.disconnect(connection)
 
 manager = ConnectionManager()
 
 # Global persistent HTTP client and lock for serializing communication with ESP32
 esp32_client: Optional[httpx.AsyncClient] = None
 esp32_lock = asyncio.Lock()
+# Status polls (idempotent GET /status) serialize among themselves but must NOT
+# share esp32_lock with commands — otherwise a slow poll blocks the next drive
+# signal and vice versa.
+esp32_poll_lock = asyncio.Lock()
+
+# Coalescing sequence numbers, keyed by endpoint. The nav loop fires
+# fire-and-forget `/command` sends at up to 10 Hz (pure-pursuit steering) plus
+# state-transition commands; when the ESP32 hiccups these used to pile up behind
+# `esp32_lock`, each holding it for ~3 s of retries, so a STOP could sit for many
+# seconds behind stale FORWARDs. Each call tags itself with the latest seq for
+# its endpoint; if a newer call is registered before this one acquires the lock,
+# the stale one is dropped. Only the most recent drive command is ever useful.
+_esp32_cmd_seq: Dict[str, int] = {}
+# Last time any ESP32 command succeeded — a single fast-fail (now 1 attempt, not
+# 3) must not immediately flip the connection indicator on a transient miss.
+_esp32_last_ok: float = 0.0
 
 async def get_esp32_client() -> httpx.AsyncClient:
     global esp32_client
@@ -295,33 +322,57 @@ async def get_esp32_client() -> httpx.AsyncClient:
         )
     return esp32_client
 
-# Asynchronous helper to forward command/status parameters to the real ESP32
-async def send_esp32_command(endpoint: str, params: dict = None) -> bool:
+# Asynchronous helper to forward command/status parameters to the real ESP32.
+#   critical=True  → mission-defining call (e.g. /start): 3 retries, long timeout.
+#   otherwise      → real-time drive signal: single fast attempt, coalesced so a
+#                    backlog can never form.
+async def send_esp32_command(endpoint: str, params: dict = None, *, critical: bool = False) -> bool:
+    global _esp32_last_ok
     url = f"http://{robot.esp32_ip}{endpoint}"
     client = await get_esp32_client()
-    
-    # Increase read/overall timeout for /start endpoint to allow calibration settling
-    timeout_val = 10.0 if endpoint == "/start" else 1.0
-    timeout = httpx.Timeout(timeout_val, connect=0.5, read=timeout_val)
-    
-    # Try sending with retries and locking to prevent concurrent request overlap on ESP32
-    async with esp32_lock:
-        for attempt in range(3):
-            try:
+
+    is_critical = critical or endpoint == "/start"
+    coalesce = endpoint == "/command" and not is_critical
+
+    my_seq = 0
+    if coalesce:
+        my_seq = _esp32_cmd_seq.get(endpoint, 0) + 1
+        _esp32_cmd_seq[endpoint] = my_seq
+
+    if is_critical:
+        attempts, timeout_val = 3, 10.0
+    else:
+        # One quick shot. At 10 Hz the next send is only 100 ms away, so a slow
+        # retry here just delays fresher data.
+        attempts, timeout_val = 1, 0.5
+    timeout = httpx.Timeout(timeout_val, connect=0.4, read=timeout_val)
+
+    for attempt in range(attempts):
+        try:
+            # Hold the lock only for the single request, never across sleeps,
+            # so one slow call can't stall every other caller for seconds.
+            async with esp32_lock:
+                # Re-check staleness AFTER acquiring the lock: while we queued,
+                # newer commands for this endpoint may have arrived — if so this
+                # one is obsolete, so skip the wire entirely.
+                if coalesce and _esp32_cmd_seq.get(endpoint) != my_seq:
+                    return False
                 resp = await client.get(url, params=params, timeout=timeout)
-                if resp.status_code == 200:
-                    print(f"Successfully sent command to ESP32 (attempt {attempt+1}): {url} {params or ''}")
-                    robot.esp32_connected = True
-                    return True
-                else:
-                    print(f"ESP32 returned status {resp.status_code} for {url} (attempt {attempt+1})")
-            except Exception as e:
-                print(f"Failed to send command to ESP32 (attempt {attempt+1}): {e}")
-            await asyncio.sleep(0.05) # Brief gap before retry
-            
-        # If we reach here, communication failed after 3 attempts
+            if resp.status_code == 200:
+                robot.esp32_connected = True
+                _esp32_last_ok = asyncio.get_event_loop().time()
+                return True
+            print(f"ESP32 returned status {resp.status_code} for {url} (attempt {attempt+1})")
+        except Exception as e:
+            print(f"Failed to send command to ESP32 (attempt {attempt+1}): {e}")
+        if attempt + 1 < attempts:
+            await asyncio.sleep(0.05)
+
+    # Only declare the link down if nothing has succeeded for a few seconds —
+    # the 5 s health-check and mission status polls also refresh this flag.
+    if asyncio.get_event_loop().time() - _esp32_last_ok > 3.0:
         robot.esp32_connected = False
-        return False
+    return False
 
 
 # Pre-calculate sequence of directions & durations based on physical distance (cm)
@@ -746,7 +797,7 @@ async def poll_esp32_status_during_mission():
     url = f"http://{robot.esp32_ip}/status"
     client = await get_esp32_client()
     try:
-        async with esp32_lock:
+        async with esp32_poll_lock:
             resp = await client.get(url, timeout=0.5)
             if resp.status_code == 200:
                 data = resp.json()
@@ -2185,12 +2236,12 @@ async def start_robot():
     # Forward mode, speed, and start to ESP32
     async def start_sequence():
         # Step 1: Stop any in-progress movement
-        await send_esp32_command("/stop")
+        await send_esp32_command("/stop", critical=True)
         await asyncio.sleep(0.2)
         # Step 2: Set mode
-        await send_esp32_command("/mode", {"type": robot.mode})
+        await send_esp32_command("/mode", {"type": robot.mode}, critical=True)
         # Step 3: Lock constant cruise speed
-        await send_esp32_command("/speed", {"value": CRUISE_SPEED})
+        await send_esp32_command("/speed", {"value": CRUISE_SPEED}, critical=True)
         await asyncio.sleep(0.1)
         # Step 4: Begin mission
         await send_esp32_command("/start")
@@ -2210,9 +2261,9 @@ async def stop_robot():
     robot.paused_by_obstacle = False
     robot.obstacle_detected = False
     
-    # Forward stop to ESP32
-    asyncio.create_task(send_esp32_command("/stop"))
-    
+    # Forward stop to ESP32 — safety-critical, so retry rather than best-effort.
+    asyncio.create_task(send_esp32_command("/stop", critical=True))
+
     robot.last_api_response = "GET /stop OK - EMERGENCY STOP/ABORT"
     return {"status": "OK", "message": "Robot stopped immediately"}
 
@@ -2439,7 +2490,7 @@ async def ping_esp32():
     url = f"http://{robot.esp32_ip}/status"
     client = await get_esp32_client()
     try:
-        async with esp32_lock:
+        async with esp32_poll_lock:
             resp = await client.get(url, timeout=2.0)
             robot.esp32_connected = resp.status_code == 200
             robot.last_api_response = f"PING OK — HTTP {resp.status_code}"
@@ -2564,9 +2615,27 @@ async def websocket_robot_stream(websocket: WebSocket):
 # ─────────────────────────────────────────────────────────────────────────────
 # Vision Pipeline Integration
 # ─────────────────────────────────────────────────────────────────────────────
+# Map the pipeline's abstract command to a firmware /command?direction=… value.
+# The firmware has no "SLOW" and no "/cmd" route — SLOW is FORWARD at reduced
+# speed; turns are small nudges, not the firmware's default 90° pivot.
+_VISION_CMD_MAP = {
+    "FORWARD":    {"direction": "FORWARD"},
+    "STOP":       {"direction": "STOP"},
+    "SLOW":       {"direction": "FORWARD", "speed": 140},
+    "TURN_LEFT":  {"direction": "LEFT",  "angle": 30, "speed": TURN_SPEED},
+    "TURN_RIGHT": {"direction": "RIGHT", "angle": 30, "speed": TURN_SPEED},
+}
+
 async def _process_vision_frame(frame_b64: str):
     """Runs YOLO+MiDaS in a thread pool, stores results, sends ESP32 command."""
     try:
+        # Skip while the models are still downloading/loading — analyze_frame
+        # would otherwise block this worker (and every following frame, via the
+        # _vision_processing guard) for the whole load.
+        if not vision_pipeline.models_ready():
+            robot.vision_scene_summary = "Vision models loading…"
+            return
+
         result = await asyncio.to_thread(vision_pipeline.analyze_frame, frame_b64)
         robot.vision_detections = result.get("detections", [])
         robot.vision_command = result.get("command", "FORWARD")
@@ -2575,36 +2644,21 @@ async def _process_vision_frame(frame_b64: str):
 
         # ── Autonomous Mode: send command to ESP32 ────────────────
         if robot.vision_auto_mode and robot.esp32_connected:
-            cmd = robot.vision_command
-            esp32_cmd_map = {
-                "FORWARD":    "FORWARD",
-                "STOP":       "STOP",
-                "SLOW":       "SLOW",
-                "TURN_LEFT":  "LEFT",
-                "TURN_RIGHT": "RIGHT",
-            }
-            esp32_cmd = esp32_cmd_map.get(cmd, "STOP")
-            try:
-                global esp32_client
-                if esp32_client is None:
-                    import httpx
-                    esp32_client = httpx.AsyncClient(timeout=1.0)
-                await esp32_client.get(
-                    f"http://{robot.esp32_ip}/cmd",
-                    params={"cmd": esp32_cmd},
-                )
-            except Exception as _ce:
-                pass  # ESP32 unreachable; ignore silently
+            params = _VISION_CMD_MAP.get(robot.vision_command, {"direction": "STOP"})
+            # Fire-and-forget through the shared sender: correct route, coalesced,
+            # fast-fail, and serialized with the nav loop's own commands.
+            asyncio.create_task(send_esp32_command("/command", dict(params)))
 
         # ── Broadcast detections to Navix dashboard via telemetry WS ──
-        vision_update = {
+        # NOTE: pass a dict — broadcast() calls send_json(), which would
+        # double-encode a pre-serialized string.
+        await manager.broadcast({
             "type": "vision_update",
             "command": robot.vision_command,
             "detections": robot.vision_detections,
             "scene_summary": robot.vision_scene_summary,
             "fps": robot.vision_fps,
-        }
-        await manager.broadcast(json.dumps(vision_update))
+        })
     except Exception as e:
         print(f"[VisionPipeline] Frame processing error: {e}")
     finally:

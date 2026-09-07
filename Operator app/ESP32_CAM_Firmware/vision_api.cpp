@@ -43,8 +43,10 @@ void VisionAPI::update() {
   }
 
 #if ENABLE_BACKEND_STREAM_PUSH
-  // 3. Push frame to laptop FastAPI Backend (10 FPS target, works on Mobile Hotspot with AP Isolation!)
-  if (now - _lastStreamPushMs >= 100) {
+  // 3. Push frame to laptop FastAPI Backend (~5 FPS target). Skipped entirely
+  //    while we are in a failure back-off window so a dead backend never costs
+  //    loop() time.
+  if (now >= _streamBackoffUntil && now - _lastStreamPushMs >= 200) {
     _lastStreamPushMs = now;
     pushFrameToBackend();
   }
@@ -60,13 +62,27 @@ void VisionAPI::pushFrameToBackend() {
   HTTPClient http;
   String url = "http://" + String(BACKEND_IP) + ":" + String(BACKEND_PORT) + "/api/esp32cam/upload";
   http.begin(url);
+  // Bound the blocking time: without these the HTTPClient defaults are ~5000 ms
+  // each, which freezes the UART heartbeat and nav-command reads in loop().
+  http.setConnectTimeout(300);   // ms to establish the TCP connection
+  http.setTimeout(400);          // ms to wait for the response
   http.addHeader("Content-Type", "image/jpeg");
   int code = http.POST(fb->buf, fb->len);
   http.end();
 
   esp_camera_fb_return(fb);
+
   if (code > 0) {
     recordFrameSent();
+    _streamFailCount    = 0;
+    _streamBackoffUntil = 0;
+  } else {
+    // Exponential back-off: 400 ms, 800 ms, 1.6 s … capped at 5 s. Prevents
+    // spending ~0.7 s of every loop cycle hammering an unreachable backend.
+    if (_streamFailCount < 8) _streamFailCount++;
+    unsigned long backoff = 200UL << _streamFailCount;   // 400ms .. 51s
+    if (backoff > 5000UL) backoff = 5000UL;
+    _streamBackoffUntil = millis() + backoff;
   }
 }
 

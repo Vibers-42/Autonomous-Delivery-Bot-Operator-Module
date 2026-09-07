@@ -22,6 +22,20 @@ _midas_device = None
 _models_loaded = False
 _model_load_lock = threading.Lock()
 
+# Wall-clock timestamp of the last completed analyze_frame(), for real
+# end-to-end throughput (frames are processed one at a time with drops in
+# between, so 1/inference_time badly overstates the true rate).
+_last_frame_wall_ts = 0.0
+
+
+def models_ready() -> bool:
+    """True once the background load has finished (YOLO and/or MiDaS resolved).
+
+    Callers should skip inference until this returns True — otherwise the first
+    analyze_frame() blocks on the model download/load.
+    """
+    return _models_loaded
+
 
 def _load_models():
     global _yolo_model, _midas_model, _midas_transform, _midas_device, _models_loaded
@@ -225,9 +239,19 @@ def analyze_frame(frame_b64: str) -> dict:
     command, scene_summary = _decide_command(detections, bgr)
 
     elapsed = time.time() - t0
-    fps = round(1.0 / elapsed, 1) if elapsed > 0 else 0.0
 
-    print(f"[VisionPipeline] cmd={command} | objs={len(detections)} | {elapsed*1000:.0f}ms | {scene_summary}")
+    # Real throughput: interval since the previous completed frame, not this
+    # frame's inference time. Falls back to 1/elapsed for the very first frame.
+    global _last_frame_wall_ts
+    now_wall = time.time()
+    if _last_frame_wall_ts > 0.0:
+        interval = now_wall - _last_frame_wall_ts
+        fps = round(1.0 / interval, 1) if interval > 0 else 0.0
+    else:
+        fps = round(1.0 / elapsed, 1) if elapsed > 0 else 0.0
+    _last_frame_wall_ts = now_wall
+
+    print(f"[VisionPipeline] cmd={command} | objs={len(detections)} | {elapsed*1000:.0f}ms | {fps} fps | {scene_summary}")
 
     return {
         "command": command,
